@@ -1,0 +1,42 @@
+%YAML 1.2
+---
+# http://www.sublimetext.com/docs/3/syntax.html
+name: SAS Log
+comment: This translates the tmLanguage match patterns from RPardee to the new sublime-syntax format. It adds additional match patterns that are common in SAS 9.4 and/or Enterprise Guide. It also renames the scopes for existing match patterns to confirm to Sublime Text's scope-naming conventions (http://www.sublimetext.com/docs/3/scope_naming.html). Note that it extrapolates from the common color-scheme conventions for markup for some of these (e.g., markup.inserted tends to be green, matching the SAS default of green text for Notes).
+file_extensions:
+  - log
+scope: source.sas_log
+contexts:
+  main:
+    - match: (^(ERROR|WARNING)|Uninitialized| remerg|invalid).*
+      comment: Error line
+      scope: invalid.source.SASLog
+    - match: ^INFO.*
+      comment: Info line
+      scope: support.module.SASLog
+    - include: note-lines
+    - match: ^\s+\d+:\d{1,}.*
+      scope: markup.inserted.numeric-conversion.SASLog
+      comment: "Captures the actual line conversions after SAS transaction log notes  like 'Character values have been converted to numeric values at the places given by: (Line):(Column).', 'Character variables have defaulted...', and 'Missing values were generated as a result of performing an operation on missing values'"
+    - match:  ^[^0-9]+.*
+      scope: markup.heading.other.SASLog
+      comment: SAS lines should start with the line number, so anything else is macro/system options writing to the log.
+  note-lines:
+    - match: '^NOTE: Library \w+ does not exist.*'
+      comment: Note line
+      scope: invalid.source.SASLog
+    - match: ^NOTE:.*
+      comment: Note line
+      scope: markup.inserted.SASLog
+    - match: ^\s*(real time|user cpu time|system cpu time|memory|OS Memory|Timestamp|Step Count)\b.*
+      scope: markup.inserted.fullstimer.SASLog
+      comment: Note lines generated when system option fullstimer is turned on.
+    - match: ^\s+Compressed is.*
+      scope: markup.inserted.compress.SASLog
+      comment: Note lines generated when system option compress is set to yes (and maybe anything other than 'no'?)
+    - match: ^\s*Each place is given by.*
+      scope: markup.inserted.line.conversion.SASLog
+      comment: "Captures the actual line conversions after SAS transaction log notes  like 'Missing values were generated as a result of performing an operation on missing values.'"
+    - match: ^\s*\d+ at \d+:\d+.*
+      scope: markup.inserted.line.conversion.SASLog
+      comment: "Captures  line conversions after SAS transaction log notes  like 'Missing values were generated as a result of performing an operation on missing values.'"
