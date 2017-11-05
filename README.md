@@ -1,9 +1,9 @@
 # SAS Package for Sublime Text (SAS Institute) #
 
-This began as a fork of [RPardee's SAS package](https://github.com/nlindner/TSQLEasy). His package provides syntax highlighting, a build system, and autocompletions. I can't use the build system because I only have access to SAS Enterprise Guide, and I don't generally use autocompletions. .
+This began as a fork of [RPardee's SAS package](https://github.com/rpardee/sas). His package provides syntax highlighting, a build system, and autocompletions. I can't use the build system because I only have access to SAS Enterprise Guide, and I don't generally use autocompletions.
 
 Because I spend much of my time in SAS' PROC SQL and MACRO language, I wanted to convert his base syntax definition into Sublime Text's new .sublime-syntax, use that new functionality to expand the specificity of syntax highlighting, add more of the SAS 9.4/SAS EG functionality, and develop something that works better for the kind of programming I tend to do (very few specialized procs, lots of explicit pass-through SQL). However, I wouldn't have switched from SAS to Sublime Text without his syntax definition, and this package owes its very existence to his hard work.
-  - Note that I disable Sublime Text's default SQL syntax and instead use customized/expanded, SQL-Server-based SQL syntax highlighting (which originally began as a [fork of tosher's TSQLEasy](https://github.com/tosher/TSQLEasy)). That allows me to minimize SQL-syntax additions within this SAS syntax.
+  - Note that to use this syntax, I disable Sublime Text's default SQL syntax and instead use [customized/expanded, SQL-Server-based SQL syntax highlighting](https://github.com/nlindner/SQL-Server_sublime-syntax). At a minimum, you should install the "SQL (override default)" directory of that repository, which includes the block-comments, strings, and string_interpolation repositories called here. This SAS syntax only highlights SQL syntax for code outside of explicit pass-through blocks (execute () or connection to ... ()), and expects that you will add in calls (e.g., source.sql-server) to any SQL dialects (besides SQL Server) that you need.
 
 If you have any syntax highlighting problems, please don't hesitate to submit an issue with sample code.
 
