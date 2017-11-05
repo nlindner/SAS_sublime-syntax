@@ -1,0 +1,1718 @@
+%YAML 1.2
+---
+# http://www.sublimetext.com/docs/3/syntax.html
+# If the syntax highlighting disappears, check that each and every data and proc-step is terminated with a run/quit statement, as:
+## data-step: run;
+## proc-sql: quit;
+## other procs: run; or quit;
+# We need the expect-semicolon repos that then include the run/quit-pop or the run/quit keyword wont be highlighted and the meta context wont pop off.
+# SAS is not a good fit for having a pre-meta-statement that has a non-consuming (?=...) match that just pushes the meta-statement context
+# Doing that forces us to have the run/quit-pop include main (or something that then re-includes all contexts, to reinvoke the base context that will capture anything)
+# When I was doing that, then each time the context changes in the syntax-test (e.g., the FIRST proc/proc sql/data step in a block of code) wont be highlighted, but the second will.
+name: SAS MacroSQL
+file_extensions:
+  - sas
+scope: source.sas
+variables:
+  table_name:  '(?:\b|&)[_[:alpha:]][_.[:alnum:]]*\b'
+  object_name: '(?:\b|&)[_[:alpha:]][_.[:alnum:]]*\b'
+  # table_name: This is complicated. For now, will not capture &s after the first letter of a table name. If I do, then any embedded parameters in a table name wont be captured as parameters, which is more problematic (for me) than including it in the match
+  macro_name_without_pct: '\b[_[:alpha:]][_[:alnum:]]{0,31}\b'
+  format_wd_suffix: '(\d+\.\d+|\d+\.|\.)'
+  format_w_suffix: '(?:\d+)?\.'
+
+contexts:
+  prototype:
+    - include: comments
+    - include: single-line-comments
+    - include: strings #includes constants
+    - include: parameter-name
+    - include: operators # includes parameter-name again
+    - include: formats-informats
+    - include: macro-calls
+  main:
+    - include: parameter-name
+    - include: opencode-statements
+    - include: meta-macro-definition
+    - include: meta-datastep
+    - include: meta-proc-sql
+    - include: meta-proc-generic
+    - match: ;
+      scope: punctuation.terminator.sas
+    - include: operators-sas-last
+    - include: comments
+    #- include: commas
+
+###############################################################################
+# PROTOTYPE REPOSITORIES                                                      #
+###############################################################################
+  comments:
+    - match: /\*
+      comment: '2017.03.11 Replacing with beginning (\/\*) and end (\*\/) with Go style-regex'
+      push:
+        - meta_include_prototype: false
+        - meta_scope: comment.block.sas
+        - match: \*/
+          scope: punctuation.definition.comment.sas
+          pop: true
+        - match: /\*
+          scope: invalid.illegal.nested-comment-start.sas
+          comment: "Nested block comments are illegal in SAS"
+    - match: \*/
+      scope: invalid.illegal.stray-comment-end.sas
+  single-line-comments:
+    - match: '^\s*(\*)(?!\/)'
+      push:
+        - meta_include_prototype: false
+        - meta_scope: comment.line.star.sas
+        - match: ;
+          pop: true
+  strings:
+    - meta_include_prototype: false
+      comment: Exclude all prototype repos within strings, except those included below
+    - include: constants
+      comment: Consume constant-matches first, because several of them are constants enclosed in strngs
+    #- include: constants-n-literal Cant get this working
+    - match: "'"
+      scope: punctuation.definition.string.begin.sas
+      push:
+        - meta_scope: string.quoted.single.sas
+        - match: "'"
+          scope: punctuation.definition.string.end.sas
+          pop: true
+    - match: '"'
+      captures:
+        0: punctuation.definition.string.begin.sas
+      push: 
+        - meta_scope: string.quoted.double.sas
+        - match: '"'
+          captures:
+            0: punctuation.definition.string.end.sas
+          pop: true
+        - include: parameter-name
+          comment: Match SAS - Parameters within single quotes do not resolve without special handling. Only work within double-quotes
+  escaped:
+    - match: "(%)(['])"
+      scope: constant.character.escape.sas
+      #pop: false
+    - match: '(%)(["])'
+      scope: constant.character.escape.sas
+      #pop: false
+    - match: '(%)([\(\)])'
+      scope: constant.character.escape.sas
+      pop: true
+  parameter-name:
+    - meta_include_prototype: false
+    - match: '(&[\w\.]+)'
+      comment: No word boundary to capture macro params embedded in larger strings (or multiple params strung together)
+      scope: variable.other.parameter.sas
+    - match: (&)(?=&)
+      comment: add highlighting to nested parameter evaluation.
+      captures:
+        1: variable.other.parameter.nested.sas
+  operators:
+    - include: parameter-name
+      comment: Start by consuming any SAS "macro variables" (parameters), which will be prefixed with ampersand
+    - match: '(<>)'
+      scope: keyword.operator.ne.sqlonly.sas
+    - match: '(<=|>=|<|>)'
+      # Had to break rpardee single-capture (from tmLanguage) into separate captures. Without the html-style &lt; and &gt;, I think that Sublimes regex parsing engine gets confused¬<>^~]?=(:)?|>|<|\||!|¦|¬|^|~|<>|><|\|\|)'"
+      scope: keyword.operator.comparison.sas
+      comment: "keyword.operators and keyword.arithmetic Per documentation for 9.4. http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=lrcon&docsetTarget=p00iah2thp63bmn1lt20esag14lh.htm&locale=en"
+      # Note that "min operator" referenced there is actually '<>', you know, the thing that almost everything recognizes as not-equal-to
+    - match: (?i)\b(eq|ne|gt|lt|ge|le)\b
+      scope: keyword.operator.word.sas
+    - match: \|\|
+      scope: keyword.operator.concatenator.sas
+      comment: capture double bars (concatenation operator) before the or operator
+    - match: '[\^¬~!]\='
+      comment: First consume the various SAS-allowed NE-symbol operators. Next check for EQ-symbol alone
+      scope: keyword.operator.ne.sas
+    - match: '(\|(?!=\|))'
+      scope: keyword.operator.logical.sas
+    - match: '&(?!=&)'
+      scope: keyword.operator.logical.sas
+    - match: '(\+|\-(?!-)|\*{1,2})'
+      scope: keyword.operator.arithmetic.sas
+      comment: add negative lookahead for subtraction to allow sql single-line comments to invoke. SAS uses equals-sign so heavily as an assignment operator, that I am choosing to assume that it is ALWAYS assignment of something. SAS also uses / to separate options. So...
+    - match: '(\=(?!\=))'
+      scope: keyword.operator.assignment.sas
+    - match: (?i)\b(in|not|and|or|like)\b
+      scope: keyword.operator.word.sas
+  operators-sas-last:
+    - match: '(\/|\=)'
+      scope: keyword.operator.arithmetic.sas
+  constants:
+    # All constants based on SAS 9.4 documentation on constants here: http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4 &docsetId=lrcon&docsetTarget=p0cq7f0icfjr8vn19vyunwmmsl7m.htm&locale=en#
+    - include: constants-datetime
+    - match: '(?i)(''|")([01.]+)(\1)(b)\b'
+      comment: bit testing constant
+      scope: constant.character.bit.sas
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.numeric.bit.sas
+        3: punctuation.definition.string.end.sas
+        4: support.constant.suffix.bit.sas
+    - match: '(?i)(''|")((\h\h(,)?){1,8})(\1)(x)'
+      comment: SAS character hexidecimal constant. A character hexadecimal constant is a string of an even number of hexadecimal characters enclosed in single or double quotation marks, followed immediately by an x. A comma can be used to make the string more readable, but it is not part of and does not alter the hexadecimal value. If the string contains a comma, the comma must separate an even number of hexadecimal characters. 
+      scope: constant.character.hex.sas
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.numeric.hex.sas
+        5: punctuation.definition.string.end.sas
+        6: support.constant.suffix.hex.sas
+    - match: '(?<![&\}\$])\b[0-9]*\.?[0-9]+([eEdD][-+]?[0-9]+)?\b'
+      comment: numeric constant
+      scope: constant.numeric.sas
+    # the following WOULD match SAS specification for numeric hexidecimal constants, but healthcare coding has FAR too many varchar codes that end with X for me to add this or EVERYTHING would be hex.
+    #- match: '(?i)(\h){1,16}(x)'
+    #  scope: constant.numeric.hex.sas
+    #  comment: SAS numeric hexidecimal constant. A numeric constant that is expressed as a hexadecimal value starts with a numeric digit (usually 0), can be followed by more hexadecimal characters, and ends with the letter X. The constant can contain up to 16 valid hexadecimal characters (0 to 9, A to F). 
+  constants-datetime:
+    - match: '(?i)(''|")((\d{1,2}(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{2,4}))(\1)(d)\b'
+      comment: SAS date constant Note Oniguruma regex to simultaneously capture both single and double-quote enclosed values
+      scope: constant.language.date.sas
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.language.date.sas
+        5: punctuation.definition.string.end.sas
+        6: support.constant.suffix.datetime.sas
+    - match: '(?i)(''|")(\d{1,2}:\d{1,2}(:\d{1,2}(\.\d+)?)?(am|pm)?)(\1)(t)\b'
+      comment: SAS time constant
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.language.time.sas
+        6: punctuation.definition.string.end.sas
+        7: support.constant.suffix.datetime.sas
+    - match: '(?i)(''|")(\d{1,2}(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{2,4}:\d{1,2}:\d{1,2}(:\d{1,2}(\.\d+)?)?(am|pm)?)(\1)(dt)\b'
+      scope: constant.language.datetime.sas
+      comment: SAS datetime constant
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.language.datetime.sas
+        7: punctuation.definition.string.end.sas
+        8: support.constant.suffix.datetime.sas
+  formats-informats:
+    # Excluding the most generic numeric format (w. or w.d) because they are indistinguishable from just a number.
+    - match: '(?i)\b((datetime|dateampm|hour|hhmm|mdyampm|mmss|timeampm|time|tod|ymddttm){{format_wd_suffix}})'
+      scope: constant.other.format.dt.sas # entity.name.section # productionize after testing 
+    - match: '(?i)\b((ddmmyy|mmddyy|yymmdd)[bcdnps]?)(?:\d*\.)'
+      scope: constant.other.format.date.sas
+    - match: '(?i)\b((mmyy|yymm|yyqr|yyq)[cdnps]?)(?:\d*\.)'
+      scope: constant.other.format.date.sas
+    - match: '(?i)\b(monname|qtr|weekday|weekdate|weekdatx|day|month|dtyear|year|julday|worddate|worddatex|date|dtdate|dtmonyy|monyy|julian|yymon|anydtdtm|anydtdte|anydtdtme|hhmmss|dtwkdatx|downame)(?:\d*\.)'
+      scope: constant.other.format.dateortime.sas
+    - match: '(?i)(\$|\b)(hex|octal|binary){{format_wd_suffix}}'
+      comment: Numeric/Character (In)formats with w.d and char prefix (for char)
+      scope: constant.other.format.sas
+    - match: '(?i)\b(bestd|bits|comma|dollarx|dollar|float|ibr|negparen|oddsr|percentn|percent|pvalue|d){{format_wd_suffix}}'
+      comment: Numeric (In)Formats with w.d
+      scope: constant.other.format.sas
+    - match: '(?i)\b(best|fract|ssn|stimer|trailsgn|e|z)(?:\d*\.)'
+      comment: Numeric (In)formats with w.
+      scope: constant.other.format.sas
+    - match: '(?i)(\${{format_wd_suffix}})'
+      comment: Generic Character (in)formats (no name, just $ and length)
+      scope: constant.other.format.char.sas
+    - match: '(?i)(\$)(ascii|base64x|char|msgcase|quote|reverj|revers|upcase|varying){{format_wd_suffix}}'
+      comment: Character (in)formats
+      scope: constant.other.format.char.sas
+
+###############################################################################
+# REUSABLE GENERIC REPOSITORIES                                               #
+###############################################################################
+  run-pop:
+    - match: (?im)\b(run)[[:space:]]*(;)
+      captures:
+        1: support.module.end.runpop.sas
+        2: punctuation.terminator.sas
+      pop: true
+  runorquit-pop:
+    - match: (?im)\b(run|quit)[[:space:]]*(;)
+      captures:  
+        1: support.module.end.runorquit.sas
+        2: punctuation.terminator.sas
+      pop: true
+  quit-pop:
+    - match: (?im)\b(quit)[[:space:]]*(;)
+      captures:
+        1: support.module.end.quitpop.sas
+        2: punctuation.terminator.sas
+      pop: true
+  datastep-data-expect-semicolon:
+    - match: ;
+      scope: punctuation.terminator.sas
+    - include: run-pop
+  expect-semicolon-quit:
+    - match: (;)
+      scope: punctuation.terminator.sas
+    - include: quit-pop
+  expect-semicolon-runorquit:
+    - match: (;)
+      scope: punctuation.terminator.sas
+    - include: runorquit-pop
+  semicolon-pop:
+    - match: (;)
+      scope: punctuation.terminator.sas
+      pop: true
+  semicolon-pop-nocapture:
+    - match: ';'
+      scope: punctuation.terminator.sas
+      pop: true
+  commas:
+    - match: ','
+      scope: punctuation.separator.sas
+  single-line-macro-comments:
+    - match: '^\s*(%\*)(?!\/)'
+      comment: SAS crappy format for recognizing line comments in macros
+      push:
+        - meta_include_prototype: false
+        - meta_scope: comment.line.macro.sas
+        - match: ;
+          pop: true      
+###############################################################################
+# META STATEMENTS                                                             #
+# All functionality is defined elsewhere, but this represents the larger      #
+# data-step and proc statements that SAS allows                               #
+###############################################################################
+  meta-macro-definition:
+    - match: '(?i)(%)(macro)[[:space:]]+({{macro_name_without_pct}})'
+      # '(?i:((%)(macro\b\s+)([A-Za-z0-9_]+)\b(.+?)?(;)))'
+      comment: "Use entity.name.function for something that ends up in the goto"
+      captures:
+        1: punctuation.definition.builtin.sas
+        2: support.macro.builtin.bgn.sas
+        3: entity.name.function.macro.sas
+      push:
+        - meta_scope: meta.function.macro.sas
+        - include: macro-mend-statement
+        - include: parameter-name
+        - include: statements-macro-only
+        - include: opencode-macro-statements
+        - include: opencode-statements
+        - include: meta-proc-sql
+        - include: meta-datastep
+        - include: meta-proc-generic
+        - include: opencode-macro-statements
+        - include: single-line-macro-comments
+        - include: commas
+    - include: statements-macro-only
+  meta-datastep:
+    - match: '^\s*(?im)(\b(data)[[:space:]]+({{table_name}}))'
+      captures:
+        2: support.module.datastep.sas
+        3: variable.function.name.table.sas
+      push: 
+        - meta_scope: meta.datastep.sas
+        - include: dataset-options 
+        - include: datastep-data-expect-semicolon
+        - include: statements-data-or-proc
+        - include: statements-datastep-only
+        - include: sas-functions
+        - include: sas-stuff
+        - include: control-keywords-nonmacro
+        - include: opencode-macro-statements
+        - include: run-pop
+        - match: (?i)\b((first|last)\.)
+          scope: variable.language.first-last.sas
+        - include: commas
+        - include: meta-macro-definition
+          comment: We have to include meta-macro directly here (instead of just in main) to get the macro-only keywords to work if proc sql starts within a macro definition. IDK.
+  meta-proc-sql:
+    - match: '(?im)\b(proc)\s+(sql|fedsql)\b'
+      captures:
+        1: support.module.bgn.sas
+        2: support.module.procname.sas
+      push:
+        - meta_include_prototype: false
+          comment: SAS does not allow single-line comments in SQL, so below includes everything from prototype EXCEPT for single-line comments
+        - meta_scope: meta.procsql.sas
+        - match: '(^[[:blank:]]*(\*)(?!/).*$)'
+          scope: invalid.illegal.comment.line.star.sas
+          comment: SAS incorrectly does not recognize SQL comments even within explicit passthrough sql. So flag them.
+        - include: comments
+        - include: strings #includes constants
+        - include: parameter-name
+        - include: operators # includes parameter-name again
+        - include: formats-informats
+        - include: macro-calls
+        - include: proc-sql-statement
+        - match: (;)
+          scope: punctuation.terminator.sas
+          comment: do not pop here
+        - include: expect-semicolon-quit
+        - include: quit-pop
+        - include: meta-macro-definition
+          comment: We have to include meta-macro directly here (instead of just in main) to get the macro-only keywords to work if proc sql starts within a macro definition. IDK.
+        - include: opencode-macro-statements
+        - include: macro-calls
+        - include: common-keywords-sas-sql
+        - include: sas-functions
+        - include: statements-sas-sql
+        - include: opencode-statements
+        - match: (?i:(disconnect\s+from\s+(\w+)\b))
+          scope: keyword.other.procsql.disconnect.sas
+          captures:
+            2: variable.language.connection.sas
+        - match: (?i)(connect\s+to\s+\w+)(\s+as\s+(\w+))?
+          captures:
+            1: keyword.other.procsql.connect.sas-sql
+            2: keyword.other.as.sas-sql
+            3: variable.language.connection.sas
+        - match: (?i)\b(reset)\b
+          scope: keyword.other.procsql.options.reset.sas
+          push:
+            - meta_scope: procsql.reset.statement.sas
+            - include: proc-sql-statement
+            - include: semicolon-pop
+  meta-proc-generic:
+    - match: '(?im)\b(proc)\s+(?!sql|fedsql)(\w+)\b'
+      comment: This could be built out to only include valid SAS procs.
+      captures:
+        1: support.module.proc.bgn.sas
+        2: support.module.procname.sas
+      push:
+        - meta_scope: meta.proc.generic.sas
+        - include: proc-datasource-name
+        - include: proc-datasource-input
+        - include: proc-datasource-out
+        - include: proc-generic-options
+        - include: control-keywords-nonmacro
+        - include: sas-stuff
+        - include: expect-semicolon-runorquit
+        - include: statements-data-or-proc
+        - include: proc-statement-output
+        - include: proc-statement-class
+        - include: proc-statement-model
+        - include: statements-proc-report
+        - include: proc-statement-tables
+        - include: proc-statement-exact
+        - include: proc-statement-test
+        - include: proc-statement-plot
+        - include: proc-statement-value
+        - include: common-keywords-statistical
+        - include: order-equals-option
+        - include: proc-charting-hodgepodge
+        - include: statements-proc-other
+        - include: statements-proc-statistical
+        - include: expect-semicolon-runorquit  
+        - include: opencode-statements
+        - include: meta-macro-definition
+  opencode-statements:
+    # Things that are valid anywhere in SAS code.
+    - include: opencode-macro-statements
+    - include: options-statement
+    - include: goptions-statement
+    - include: ods-statement
+    - include: include-statement
+    - include: filename-statement
+    - include: titlefootnote-statement
+    - include: libname-statement
+    - match: \b(?im)(endsas|page|resetline)\s*(;)
+      captures:
+        1: keyword.other.globalstatement.optionless.sas
+        2: punctuation.terminator.sas
+    - match: (?i)^\s*(missing|skip|sysecho)\b.*(;)
+      captures:
+        1: keyword.other.globalstatement.oneline.sas
+        2: punctuation.terminator.sas
+
+###############################################################################
+# Common keywords, variables, formats, statements - used in multiple contexts #
+###############################################################################
+  sas-functions:
+    - match: (?i)((any|not)(alnum|alpha|cntrl|digit|first|graph|lower|name|print|punct|space|upper|xdigit))\s*(?=\()
+      scope: keyword.other.built-in.function.sas
+    - match: (?i)\b(divide|dim|hbound|lbound|band|blshift|bnot|bor|brshift|bxor|byte|cat|catq|cats|catt|catx|char|choosec|choosen|coalescec|collate|compare|compbl|compged|complev|compress|count|countc|countw|dequote|find|findc|findw|first|ifc|index|indexc|indexw|left|length|lengthc|lengthm|lengthn|lowcase|md5|missing|mvalid|nliteral|nvalid|propcase|quote|rank|repeat|reverse|right|scan|sha256|sha256hex|sha256hmachex|soundex|spedis|strip|subpad|substr|substrn|translate|transtrn|tranwrd|trim|trimn|typeof|upcase|verify|prxchange|prxmatch|prxparen|prxparse|prxposn|allcomb|allperm|comb|graycode|lcomb|lexcomb|lexcombi|lexperk|lexperm|lfact|lperm|perm|datdif|date|datejul|datepart|datetime|day|dhms|hms|holiday|holidayck|holidaycount|holidayname|holidaynx|holidayny|holidaytest|hour|intcindex|intck|intcycle|intfit|intfmt|intget|intindex|intnx|intseas|intshift|inttest|juldate|juldate7|mdy|minute|month|nwkdom|qtr|second|time|timepart|today|tzoneid|tzonename|tzoneoff|tzones2u|tzoneu2s|week|weekday|year|yrdif|yyq|cmiss|css|cv|euclid|geomean|geomeanz|harmean|harmeanz|iqr|kurtosis|largest|lpnorm|mad|max|mean|median|min|n|nmiss|ordinal|pctl|range|rms|skewness|smallest|std|stderr|sum|sumabs|uss|var|geodist|zipcitydistance|dclose|dcreate|dinfo|dnum|dopen|doptname|doptnum|dread|dropnote|dsncatlgd|fappend|fclose|fcol|fdelete|fexist|fget|fileexist|filename|fileref|finfo|fnote|fopen|foptname|foptnum|fpoint|fpos|fput|fread|frewind|frlen|fsep|fwrite|mopen|pathname|rename|sysmsg|sysrc|module|modulec|modulen|blackclprc|blackptprc|blkshclprc|blkshptprc|compound|convx|convxp|cumipmt|cumprinc|daccdb|daccdbsl|daccsl|daccsyd|dacctab|depdb|depdbsl|depsl|depsyd|deptab|dur|durp|effrate|finance|garkhclprc|garkhptprc|intrr|ipmt|irr|margrclprc|margrptprc|mort|netpv|nomrate|npv|pmt|ppmt|pvp|saving|savings|timevalue|yieldp|arcosh|arsinh|artanh|cosh|sinh|tanh|dosubl|resolve|symexist|symget|symglobl|symlocal|abs|airy|beta|cnonct|coalesce|compfuzz|constant|dairy|deviance|digamma|erf|erfc|exp|fact|fnonct|gamma|gcd|ibessel|jbessel|lcm|lgamma|log|log1px|log10|log2|logbeta|logistic|mod|modz|msplint|sign|sqrt|tnonct|trigamma|ifn|modexist|cdf|logcdf|logpdf|logpmf|logsdf|pdf|pmf|poisson|probbeta|probbnml|probbnrm|probchi|probf|probgam|probhypr|probmc|probnegb|probnorm|probt|sdf|betainv|cinv|finv|gaminv|probit|quantile|squantile|tinv|normal|ranbin|rancau|rand|ranexp|rangam|rannor|ranpoi|rantbl|rantri|ranuni|uniform|attrc|attrn|cexist|close|curobs|dsname|envlen|exist|fcopy|fetch|fetchobs|getvarc|getvarn|iorcmsg|libname|libref|note|open|point|rewind|sysexist|varfmt|varinfmt|varlabel|varlen|varname|vartype|whichc|whichn|addr|addrlong|dif|fmtinfo|getoption|input|inputc|inputn|lag|peek|peekc|peekclong|peeklong|ptrlongadd|put|putc|putn|sleep|sysget|sysparm|sysprocessid|sysprocessname|sysprod|system|uuidgen|fipname|fipnamel|fipstate|stfips|stname|stnamel|zipcity|zipfips|zipname|zipnamel|zipstate|arcos|arsin|atan|atan2|cos|cot|csc|sec|sin|tan|ceil|ceilz|floor|floorz|fuzz|int|intz|round|rounde|roundz|trunc|varray|varrayx|vformat|vformatd|vformatdx|vformatn|vformatnx|vformatw|vformatwx|vformatx|vinarray|vinarrayx|vinformat|vinformatd|vinformatdx|vinformatn|vinformatnx|vinformatw|vinformatwx|vinformatx|vlabel|vlabelx|vlength|vlengthx|vname|vnamex|vtype|vtypex|vvalue|vvaluex)\s*(?=\()
+      scope: keyword.other.built-in-function.sas
+      comment: Just dumped everything here. Might need to parse some apart. 
+    - match: (?i)call\s+\b(cats|catt|catx|compcost|missing|scan|prxchange|prxdebug|prxfree|prxnext|prxposn|prxsubstr|allcomb|allcombi|allperm|graycode|lexcomb|lexcombi|lexperk|lexperm|rancomb|ranperk|ranperm|is8601_convert|module|execute|symput|symputx|logistic|softmax|stdize|tanh|ranbin|rancau|ranexp|rangam|rannor|ranpoi|rantbl|rantri|ranuni|streaminit|sortc|sortn|poke|pokelong|sleep|system|tso|label|set|vname|vnext)\s*(?=\()
+      scope: keyword.other.built-in-function.call.sas
+    - include: commas
+  sas-stuff:
+    - match: '\b(?i)(error|errors|over|x)\b'
+      scope: keyword.other.rpardee-remainingsas.sas
+      comment: From RPardee SAS syntax. TODO Locate what they are and remove once I add captures.
+  common-keywords-statistical:
+    - match: (?i)\b(clm|css|cv|kurt|kurtosis|lclm|max|mean|median|min|mode|n|nmiss|nobs|p1|p10|p20|p25|p30|p40|p5|p50|p60|p70|p75|p80|p90|p95|p99|probt|prt|q1|q3|qrange|range|skew|skewness|std|stddev|stderr|stdmean|sum|sumwgt|t|uclm|uss|var)\b
+      scope: keyword.other.proc.statistics.common.sas
+      # univariate: \b(GEOMEAN|GINI|MAD|QN|SN|STD_GINI|STD_MAD|STD_QN|STD_QRANGE|STD_SN|MSIGN|NORMALTEST|SIGNRANK|PROBM|PROBN|PROBS)\b
+  common-keywords-windowsos:
+    - match: (?im)\b(blksize|encoding|lrecl|recfm)\s*(=)
+      captures:
+        1: keyword.other.windowsos.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: \b(no)?(block)\b
+      scope: keyword.other.windowsos.optionalnoprefix.sas
+    - match: (?i)\b(byte|message|eofconnect|notab)\b
+      scope: keyword.other.windowsos.other.sas
+  common-keywords-filedevice:
+    - match: (?i)\b(dummy|email|ftp|pipe|printer|sftp|temp)\b
+      comment: This is incomplete and excludes less-common ones that I'm unfamiliar. COULD separate out all the options for each device-type (e.g., email, catalog, webdav, etc.)
+      scope: keyword.other.statement.filedevicename.sas
+  common-keywords-file-infile:
+    - match: (?i)\b(column|col|delimiter|dlmstr|dlmsopt|dlm|filename|filevar|linesize|line|n)\s*(=)
+      captures:
+        1: keyword.other.file-infile.withequals.sas
+        2: keyword.operator.assignment.sas          
+  keywords-statistical-chisq:
+    - match: (?i)\b(agree|ajchi|all|bdchi|bin|binomial|bowker|chisq|cmh|cmh1|cmh2|cmhcor|cmhga|cmhrms|cochq|comor|contgy|cramv|eqkap|eqor|eqwkp|fisher|gailsimon|gamma|gs|jt|kappa|kentb|lamcr|lamdas|lamrc|lgor|lgrrc1|lgrrc2|lrchi|mcnem|measures|mhchi|mhor|mhrrc1|mhrrc2|n|nmiss|oddsratio|or|pchi|pcorr|phi|plcorr|rdif1|rdif2|relrisk(1|2)?|r(i)?sk(1|2|11|12|21|22)|riskdiff(1|2)?|rrc(1|2)|scorr|smdcr|smdrc|stutc|taub|tauc|trend|tsymm|u|ucr|urc|wtkap|wtkappa|zelen)\b
+      scope: keyword.other.proc.statistics.chisq.sas
+  variables-data-or-proc:
+    - match: (?i)\b(_(all|numeric|character)_)\b
+      scope: variable.language.namelist.sas
+      comment: See "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=lrcon&docsetTarget=p0wphcpsfgx6o7n1sjtqzizp1n39.htm&locale=en"
+    - match: (?i)\b(_(freq|type)_)\b
+      scope: variable.language.automatic.sas
+    - match: (?i)\b(_(null|i)_)\b
+      scope: variable.language.namelist.sas
+  statements-data-or-proc:
+    - include: semicolon-pop # pop: true
+    - include: variables-data-or-proc
+    - include: where-statement
+    - include: by-statement
+    - include: format-informat-statement
+    - include: attrib-statement
+      comment: Per attrib and label per "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=proc&docsetTarget=n1ml5do0of6vafn1rptm92hgbclw.htm&locale=en" (length has no effect)
+    - include: label-statement
+    - include: common-statements-proc
+    - include: titlefootnote-statement
+  where-statement:
+    - match: (?i)^\s*(where)\s+
+      comment: To distinguish this from the dataset-options parallel, require these to be on a new line. ASee "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=proc&docsetTarget=n1ml5do0of6vafn1rptm92hgbclw.htm&locale=en"
+      captures:
+        1: keyword.other.statement.where.sas
+      push:
+        - include: semicolon-pop # pop: true
+  by-statement:
+    - match: (?im)^\s*(by)\s+
+      captures:
+        1: keyword.other.statement.by.sas
+      push:
+        - meta_scope: meta.by.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(descending|groupformat|notsorted)\b
+          scope: keyword.other.by.sas
+  attrib-statement:
+    - match: '(?i)\b(attrib)\s+'
+      captures:
+        1: keyword.other.statement.attrib.sas
+      push:
+        - meta_scope: meta.attrib.sas
+        - include: semicolon-pop # pop: true
+        - include: format-informat-statement
+        - include: formats-informats
+        - match: (?i)\b(label|length|transcode)\s*(=)
+          captures:
+            1: keyword.other.attrib.withequals.sas
+            2: keyword.operator.assignment.sas
+  format-informat-statement:
+    - match: (?i)\b((?:in)?format)\s+
+      scope: keyword.other.format.sas
+    - include: formats-informats
+  label-statement:
+    - match: (?i)^\s*(label)\s+
+      comment: To distinguish this from the dataset-options parallel, require these to be on a new line. Also applies in multiple proc steps, see "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=proc&docsetTarget=n1ml5do0of6vafn1rptm92hgbclw.htm&locale=en"
+      captures:
+        1: keyword.other.statement.label.sas
+      push:
+        - include: semicolon-pop # pop: true
+
+###############################################################################
+# SAS MACRO LANGUAGE                                                          #
+###############################################################################
+  macro-mend-statement:
+    - match: (?im)(%)(mend)[[:space:]]*(;)
+      captures:
+        1: punctuation.definition.builtin.sas
+        2: support.macro.builtin.end.sas
+        3: punctuation.terminator.sas
+      pop: true
+    - match: (?im)(%)(mend)[[:space:]]({{table_name}})[[:space:]]*(;)
+      captures:
+        1: punctuation.definition.builtin.sas
+        2: support.macro.builtin.end.sas
+        3: variable.function.name.macro.sas
+        4: punctuation.terminator.sas
+      pop: true
+  macro-calls:
+    - match: '(?i)(?<![''"])(%)(?!\b(?:abort|bquote|by|cmpres|compstor|copy|datatyp|display|do|else|end|eval|global|goto|if|include|index|input|kverify|left|length|let|local|lowcase|macro|mend|nrbquote|nrquote|nrstr|put|qcmpres|qlowcase|qscan|qsubstr|qsysfunc|qtrim|quote|qupcase|return|scan|str|substr|superq|symdel|symexist|symglobl|symlocal|syscall|sysevalf|sysexec|sysfunc|sysget|syslput|sysmacdelete|sysmacexec|sysmacexist|sysmexecdepth|sysmexecname|sysmstoreclear|sysprod|sysrc|sysrput|then|to|trim|unquote|until|upcase|verify|while|window|abend|go|act|activate|inc|on|open|pause|clear|infile|close|qkcmpres|cms|kcmpres|qkleft|comandr|kindex|qkscan|kleft|qksubstr|deact|klength|qktrim|del|kscan|qkupcase|delete|ksubstr|ktrim|dmidsply|kupcase|tso|dmisplit|unstr|edit|list|resolve|listm|run|save|file|metasym|stop)\b)({{macro_name_without_pct}})'
+      comment: after excluding all macro (or %-prefixed) functions, assume this is a macro name. Might need to revisit the non-capturing match at the beginning. Want to prevent "like '%blah%' from invoking" Words starting at abend are "reserved words in the macro facility", per http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=mcrolref&docsetTarget=p0y43hj7lzhq1gn1r68h65wzljbt.htm&locale=en
+      captures:
+        1: punctuation.definition.function.name.macro.sas
+        2: variable.function.name.macro.sas
+    - match: '(?i)(?<![''"])(%)(?!\b(?:abort|bquote|by|cmpres|compstor|copy|datatyp|display|do|else|end|eval|global|goto|if|include|index|input|kverify|left|length|let|local|lowcase|macro|mend|nrbquote|nrquote|nrstr|put|qcmpres|qlowcase|qscan|qsubstr|qsysfunc|qtrim|quote|qupcase|return|scan|str|substr|superq|symdel|symexist|symglobl|symlocal|syscall|sysevalf|sysexec|sysfunc|sysget|syslput|sysmacdelete|sysmacexec|sysmacexist|sysmexecdepth|sysmexecname|sysmstoreclear|sysprod|sysrc|sysrput|then|to|trim|unquote|until|upcase|verify|while|window|abend|go|act|activate|inc|on|open|pause|clear|infile|close|qkcmpres|cms|kcmpres|qkleft|comandr|kindex|qkscan|kleft|qksubstr|deact|klength|qktrim|del|kscan|qkupcase|delete|ksubstr|ktrim|dmidsply|kupcase|tso|dmisplit|unstr|edit|list|resolve|listm|run|save|file|metasym|stop))([_[:alpha:]][_[:alnum:]]{32,256})\b'
+      captures:
+        1: invalid.illegal.punctuation.definition.function.name.macro.sas
+        2: invalid.illegal.variable.function.name.macro.sas
+  statements-macro-only:
+    - match: (?i)(%)(global|local)\b
+      scope: keyword.other.macro.sas
+    - match: (?i)(%)(goto)\b\s*({{object_name}})\s*(;)
+      captures:
+        1: punctuation.definition.keyword.macro.sas
+        2: keyword.other.macro.goto.sas
+        3: entity.name.label.goto.sas
+        4: punctuation.terminator.sas
+    - include: macro-control-keywords
+  macro-control-keywords:
+    - meta_include_prototype: false
+    - match: (?i)(%)(if|then|else|do|end|while|until|by|to)\b
+      scope: keyword.control.macro.sas
+      comment: want to push these with the include external package. Will need custom tmTheme highlighting to capture these outside of macro definition.      
+  opencode-macro-statements:
+    # Include all macro opencode statements
+    - include: opencode-macro-statements-generic
+    - include: opencode-macro-statements-for-embeds
+    - include: quote-str-macro-statement
+    - include: opencode-sysfunc-statement
+  quote-str-macro-statement:
+    - match: (?i)(%)((nr)?(quote|str))\b
+      scope: keyword.other.macro.opencode.masked.sas
+      captures:
+        1: punctuation.definition.keyword.sas
+        2: keyword.other.macro.sas
+    - include: escaped
+      pop: true
+  opencode-macro-statements-for-embeds:
+    - meta_include_prototype: false
+    - match: (?i)(%)(bquote|compress|eval|index|left|length|let|lowcase|nrbquote|put|qleft|qlowcase|qscan|qsubstr|qtrim|qupcase|quote|scan|substr|superq|sysevalf|sysget|sysmacexec|sysmacexist|sysmexecdepth|sysmexecname|sysprod|trim|unquote|upcase)\b
+      scope: keyword.other.macro.opencode.sas
+      captures:
+        1: punctuation.definition.keyword.sas
+        2: keyword.other.macro.sas
+  opencode-macro-statements-generic:
+    - match: (?i)(%)(abort|copy|display|list|return|symexist|symglobl|symlocal|syscall|sysexec|sysrc|sysrput|verify)\b
+      scope: keyword.other.macro.opencode.sas
+      captures:
+        1: punctuation.definition.keyword.sas
+        2: keyword.other.macro.sas
+    - match: (?i)\b(call\s*symput(x)?)*\s*(?=\()
+      scope: keyword.other.function.macro.assignment.sas
+  opencode-sysfunc-statement:
+    - match: (?im)(%)(qsysfunc|sysfunc)\s*(?=\()
+      comment: This allows all of the included statements within the parentheses of a sysfunc statement.
+      scope: keyword.other.macro.sysfunc.sas
+      push:
+        - meta_scope: meta.sysfunc.group.sas
+        - include: semicolon-pop
+        - include: inside-sysfunc-parens
+        - include: opencode-macro-statements-generic
+        - include: quote-str-macro-statement
+  inside-sysfunc-parens:
+    - match: '\('
+      scope: punctuation.section.group.sysfunc.bgn.sas
+    # sysfunc can (and actually must if SAS functions need to be nested) be nested in another sysfunc, so call include the calling repo here.
+      set:
+        - meta_scope: meta.sysfunc.group.sas
+        - match: '(\))'
+          scope: punctuation.section.group.sysfunc.end.sas
+          pop: true
+        - include: semicolon-pop
+        - include: opencode-sysfunc-statement
+        - include: sas-functions
+        # Need to reinclude this here
+        - include: opencode-macro-statements-generic
+        - include: opencode-macro-statements-for-embeds
+        - include: quote-str-macro-statement
+
+###############################################################################
+# SAS SQL PROCEDURES                                                          #
+# This has been written for proc sql. It does not really implement the        #
+# new functionality for PROC FEDSQL, in part because FEDSQL keeps throwing    #
+# odd errors when I try to use it in SAS 9.4                                  #
+###############################################################################
+  proc-sql-statement:
+    - match: (?i)\b(exitcode|dquote|inobs|loops|outobs|reduceput|reduceputobs|reduceputvalues|undo_policy|sortseq|ubufsize)\s*(=)
+      captures: 
+        1: keyword.other.procsql.options.equals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b((no)?(constdatetime|dictdiag|double|errorstop|exec|feedback|ipassthru|iponeattempt|number|print|prompt|remerge|sortmsg|stimer|threads|warnrecurs))\b
+      scope: keyword.other.procsql.options.optionalnoprefix.sas
+    - match: (?i)\b(_method|_tree|exitcode|stopontrunc)\b
+      scope: keyword.other.procsql.options.sas
+      comment: These keywords can be included in the PROC statement (i.e., before the semi-colon after proc sql) or in a RESET <theseoptions>; statement within
+  statements-sas-sql:
+    - include: meta-macro-definition
+    - include: ansisql-embedded-execute
+    - include: sas-functions
+    - include: common-keywords-sas-sql
+    - include: sql_index_create
+    - include: sql_table_alter
+    - include: sql_table-view_drop
+    - include: sql_index_drop
+    - include: sql_table_create
+    - include: sql_object_describe
+    - match: (?i)\b(reset)\b
+      scope: keyword.other.procsql.options.reset.sas
+      push:
+        - meta_scope: procsql.reset.statement.sas
+        - include: proc-sql-statement
+        - include: semicolon-pop
+    - include: semicolon-pop-nocapture
+    - include: commas
+  maybe_embedded_or_simple_from:
+    - match: (?i)\b(?=from)\b
+      scope: keyword.other.from.II.sas
+      comment: Important that we not capture the from here, just push the two forms of FROM and then bailout after consuming
+      push:
+        - match: '$\n?'
+          comment: Include a secondary non-capturing bailout to pop off and begin recapturing regular keywords, if the keywords below are not encountered
+          pop: true
+        - match: (?i)\b(?=join|where|group|order|having|on|or|as|left|inner|outer|natural|cross|select|,)\b
+          pop: true
+        - include: ansisql_embedded_connectionto
+        - include: simple_from
+  simple_from:
+   - match: (?i)\b(from)\b
+     scope: keyword.other.from.sas
+  sas_for_embedded_sql:
+    - meta_include_prototype: false
+    - include: 'scope:source.sql#block-comments'
+    - include: 'scope:source.sql#strings'
+      comment: Need to include repos from the embedded syntax for certain critical/prototype sections, or anything pushed over in the embed will invoke -- even within comments and strings. Which looks weird
+    - include: parameter-name
+    - include: macro-calls
+    - include: opencode-macro-statements-for-embeds
+    - include: quote-str-macro-statement
+    - include: opencode-sysfunc-statement
+    - include: macro-control-keywords
+  ansisql_embedded_connectionto:
+    - match: '(?i)\b(connection\s+to\s+)([\w.&]+)\b'
+      captures:
+        1: keyword.other.procsql.connection.sas
+        2: variable.language.connection.sas
+      push: 
+        - meta_include_prototype: false
+        - meta_content_scope: embedded2.sql
+          comment: Need meta_include_prototype here and not one level up.
+        - include: scope:source.sql
+        - include: scope:source.sqlserver
+        #- include: 'Packages/SQL Server/SQL Server.sublime-syntax'
+      with_prototype:
+        - include: semicolon-pop
+        - include: sas_for_embedded_sql
+  ansisql-embedded-execute:
+    #- meta_include_prototype: false
+    - match: '(?i)\b(execute)\s+(?:\()'
+      captures:
+        1: keyword.other.execute.sas-sql
+      push: 
+        - meta_include_prototype: false
+        - meta_content_scope: embedded.sql
+        - include: scope:source.sql
+        - include: scope:source.sqlserver
+        #- include: 'Packages/SQL Server/SQL Server.sublime-syntax'
+      with_prototype:
+        - match: '(?i)\)\s*(by)\s*([\w.&]+)\s*(;)'
+          captures: 
+            1: keyword.other.execute.by.sas-sql
+            2: variable.language.connection.sas-sql
+            3: punctuation.terminator.sas-sql
+          pop: true
+        - include: sas_for_embedded_sql
+        #- include: macro-calls
+        #- include: parameter-name
+        #- include: meta-macro-definition
+  sql_data-type:
+    - match: |-
+        (?xi)
+          # normal stuff, capture 1. Cursor is cover in other matches
+           \b(int(?:eger)?|smallint|date|real|double\s+precision)\b
+          # optional numeric suffix, capture 4 + 5i
+          |\b(char(?:acter)?|varchar)\b\s*(?:\((\s*\d+\s*)\))?
+          # special case, capture 6 + 7i + 8i
+          |\b(num(?:eric)?|dec(?:imal)?|float)\b\s*(?:\(\s*(\d+)\s*(?:,\s*(\d+))?\s*\))?
+      comment: Because SAS is such a weakly-typed language, these are really only valid within create or alter/modify table/columns.
+      captures:
+        1: storage.type.sas-sql
+        2: storage.type.sas-sql
+        3: constant.numeric.sas-sql
+        4: storage.type.sas-sql
+        5: constant.numeric.sas-sql
+        6: constant.numeric.sas-sql
+  sql_column-modifier:
+    - match: (?i)\b((?:in)?format)\s*(=)
+      comment: All of these per "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=n09x2o5dobk74an1mupf5f3y8emt.htm&locale=en"
+      captures:
+        1: keyword.other.informat.sas-sql
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(length)\s*(=)\s*(\d+)\b
+      captures:
+        1: keyword.other.length.sas-sql
+        2: keyword.operator.assignment.sas
+        3: constant.numeric.sas
+    - match: (?i)\b(label)\s*(=)
+      captures:
+        1: keyword.other.label.sas-sql
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(transcode)\s*(=)\s*(yes|no)\b
+      captures:
+        1: keyword.other.transcode.sas-sql
+        2: keyword.operator.assignment.sas
+        3: keyword.other.transcode-option.sas-sql
+  common-keywords-sas-sql:
+    - include: maybe_embedded_or_simple_from
+    - include: sql_column-modifier
+    - match: '(?i)\b(select(\s+distinct)?)\b'
+      scope: keyword.other.select.sas-sql
+    - match: '(?i)\b((inner|cross)\s+join|(left|right|full)(\s+outer)?\s+join|natural(\s+(left|right)(\s+outer)?)?\s+join)\b'
+      scope: keyword.other.join.sas-sql
+      comment: May not be exact, but see 'http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=p1bk7i6jqseje7n1lifcip8kzhpp.htm"
+    - match: '(?i)\b(insert\s+into|insert|update|delete|join|where|group\s+by|exists|having|order\s+by)\b'
+      scope: keyword.other.DML.sas-sql
+      comment: consume these (including simple from/join keywords) after first consuming the "complex" patterns 
+    - match: (?i)\b(between|like)\b
+      scope: keyword.operator.word.sas-sql
+    - match: (?i)\b(on)\b
+      scope: keyword.other.on.sas-sql
+    - match: (?i)\b(?<!%)(case|end|when|then|else)\b
+      scope: keyword.control.case.sql
+    - match: '(?i)\b(into)\s+({{object_name}})'
+      comment: need to fix this to match sas
+      captures:
+        1: keyword.other.into.sas-sql
+        2: entity.name.function.object.sas-sql
+    - match: (?i)\b((is\s+)?(not\s+)?null)\b
+      scope: keyword.other.nulls.sas-sql
+    - match: (?i)\b((is\s+)?(not\s+)?missing)\b
+      scope: keyword.other.missing.sas-sql
+      comment: SAS-specific keyword that works like null
+    - match: (?i)\b((?:not\s+)?contains)\b
+      comment: SAS-specific keyword
+      scope: keyword.other.contains.sas-sql
+    - match: (?i)\bAS\b
+      scope: keyword.other.as.sas-sql
+    - match: (?i)\b(DESC|ASC)\b
+      scope: keyword.other.order.sas-sql
+    - match: (?i)\b(avg|mean|min|max|count|freq|n|css|cv|median|nmiss|prt|range|std|stderr|sum|sumwgt|t|uss|var)\b\s*(?:\()\s*(distinct|all)?
+      comment: "Aggregate Functions: http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=n02w9rre6jk3n5n10zot9n4uqrzj.htm"
+      captures:
+        1: support.function.aggr.sas-sql
+        2: keyword.other.distinct.sas-sql
+    - match: (?i)\b(calculated)\b
+      comment: SAS-only. See "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=n0jxri3yohqdwbn1slekmsc882gz.htm&locale=en"
+      scope: keyword.other.sas-only.calculated.sas-sql
+    - match: (?i)\b(into|separated\s+by|notrim|through|thru)\b
+      comment: SAS-only. See "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=mcrolref&docsetTarget=n1y2jszlvs4hugn14nooftfrxhp3.htm&locale=en"
+      scope: keyword.other.sas-only.calculated-clause.sas-sql
+    - match: '(?i)(:)\s*({{object_name}})'
+      captures:
+        1: punctuation.definition.variable.parameter.sas
+        2: variable.other.parameter.sas
+    - match: (?i)\b(lower|upper|substring|btrim)\b\s*(?:\()      
+      scope: keyword.other.built-in-function.sql-only.sas-sql
+    - match: (?i)\b(outer\s+union(?:\s+corresponding)?)\b
+      scope: keyword.other.sas-only.union.sas-sql
+    - match: (?i)\b((union|intersect|except)(?:\s+all)?(?:\s+corr(?:esponding)?)?)\b
+      scope: keyword.other.union-other-set.sas-sql
+    - include: sas-functions
+
+###############################################################################
+# SAS DATA STEP                                                               #
+###############################################################################
+  common-statements-datastep:
+    - match: (?i)^\s*(drop|keep|rename|retain)\s+
+      comment: To distinguish these from the dataset-options parallel, require these to be on a new line
+      captures:
+        1: keyword.other.statement.datastep-variable.sas
+      push:
+        - include: semicolon-pop # pop: true
+  statements-datastep-only:
+    - include: datastep-merge-statement
+    - include: datastep-modify-statement
+    - include: datastep-update-statement
+    - include: datastep-set-statement
+    - include: common-statements-datastep
+    - include: file-statement
+    - include: infile-statement
+    - include: datalines-statement
+    - include: datastep-input-statement
+    - include: statements-datastep-optionless
+    - include: datastep-array-statement
+    - include: datastep-put-statement
+    - include: datastep-length-statement
+    - include: datastep-select-block
+    - match: (?i)\b(_(n|error|file|infile|msg|iorc|cmd)_)\b
+      scope: variable.language.datastep-automatic.sas
+      comment: "Per SAS: The names _N_, _ERROR_, _FILE_, _INFILE_, _MSG_, _IORC_, and _CMD_ are reserved for the variables that are generated automatically for a DATA step. Note that SAS products use variable names that start and end with an underscore; it is recommended that you do not use names that start and end with an underscore in your own applications. See Automatic Variables for more information."
+    - match: (?i)\b(delete|output|remove|replace)\b\s*({{table_name}})?(;)
+      captures:
+        1: variable.language.datastep-operation.sas
+        2: variable.function.name.table.sas
+        3: punctuation.terminator.sas
+      comment: Leave this alone for now. They can be used either as a statement or as a keyword.other.
+  dataset-options:
+    - match: '(?<=\s|\(|\))(?i)(alter|bufno|bufsize|cntllev|compress|dldmgaction|drop|encoding|encrypt|encryptkey|extendobscounter|fileclose|firstobs|genmax|gennum|idxname|idxwhere|index|in|keep|label|obsbuf|obs|outrep|pointobs|pw|pwreq|read|rename|repempty|replace|reuse|sgio|role|sortedby|sortseq|spill|tobsno|trantab|type|usedirectio|where|whereup|write)\s*(?==)'
+      scope: keyword.other.datasetoption.sas
+      comment: 'Derived from RPardee: Checked against SAS® 9.4 Data Set Options: Reference, Fourth Edition. Most are from there, plus a few NLS (ENCODING, TRANTAB, etc.) and OS-specific (SGIO, USEDIRECTIO) options'  
+    - include: datastep-data-expect-semicolon
+  control-keywords-nonmacro: 
+    - match: (?i)\b(if|then|else|do|to|end|while|until)\b
+      scope: keyword.control.nonmacro.sas
+  datalines-statement:
+    - match: (?i)^\s*((datalines|cards|lines)4?)\s*(;)
+      comment: Technically, datalines4 allows for semicolons, but I just don't care
+      captures:
+        1: keyword.other.statement.datalines.sas
+        3: punctuation.terminator.sas
+  statements-datastep-optionless:
+    - match: (?i)^\s*(describe|continue|execute|leave|list|lostcard|stop)\s*(;)
+      comment: Generic statements, no keywords within
+      captures:
+        1: keyword.other.statement.datastep-generic.sas
+        2: punctuation.terminator.sas
+  dataset-noncontrol-end:
+    - match: (?i)\b(end)\s*(=)
+      comment: Assign common scope for end keyword (where it sets a variable when datastep ends). Include this common scope in the blacklist for BracketHighlighter plugin
+      captures:
+        1: keyword.other.dataset.noncontrol.sas
+        2: keyword.operator.assignment.sas
+  datastep-select-block:
+    - match: (?i)^\s*(select).*(;)
+      captures:
+        1: keyword.control.conditional.datastep-select.bgn.sas
+        2: punctuation.terminator.sas
+      push:
+        - meta_scope: meta.datastep-select.sas
+          comment: I am choosing not to capture these as do/end blocks, because it would require fiddling with BracketHighlighter settings.
+        - match: (?i)\b(otherwise|when)\b
+          scope: keyword.other.datastep.other-block.sas
+        - match: (?i)\b(end)\s*(;)
+          captures:
+            1: keyword.other.datastep.noncontrol.sas
+            2: punctuation.terminator.sas
+          pop: true
+  datastep-merge-statement:
+    - match: (?i)^\s*(merge)\s+({{table_name}})
+      captures:
+        1: keyword.other.datastep.merge.sas
+        2: variable.function.name.table.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - include: dataset-noncontrol-end
+        - include: dataset-options
+  datastep-modify-statement:
+    - match: (?i)^\s*(modify)\s+({{table_name}})
+      captures:
+        1: keyword.other.datastep.modify.sas
+        2: variable.function.name.table.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - include: dataset-noncontrol-end
+        - include: dataset-options
+        - match: (?i)\b(curobs|keyreset|key|nobs|point|updatemode)\s*(=)
+          captures:
+            1: keyword.other.modify.withequals.sas
+            2: keyword.operator.assignment.sas
+  datastep-update-statement:
+    - match: (?i)^\s*(update)\s+({{table_name}})
+      captures:
+        1: keyword.other.datastep.update.sas
+        2: variable.function.name.table.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - include: dataset-noncontrol-end
+        - include: dataset-options
+        - match: (?i)\b(updatemode)\s*(=)
+          captures:
+            1: keyword.other.update.withequals.sas
+            2: keyword.operator.assignment.sas
+  datastep-set-statement:
+    - match: (?i)^\s*(set)\s+({{table_name}})
+      captures:
+        1: keyword.other.datastep.set.sas
+        2: variable.function.name.table.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - include: dataset-noncontrol-end
+        - include: dataset-options
+        - match: (?i)\b(curobs|indsname|keyreset|key|nobs|open|point)\s*(=)
+          scope: keyword.other.set.sas
+        - match: (?i)\b(unique)\b
+          scope: keyword.other.set.sas
+  datastep-input-statement:
+    - match: (?i)^\s*(input)\s+
+      captures:
+        1: keyword.other.datastep.input.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - match: '(\$|@{1,2})'
+          scope: keyword.other.input.sas
+        - include: formats-informats
+  datastep-array-statement:
+    - match: (?i)^\s*(array)\s+
+      scope: keyword.other.datastep.array.sas
+      push: 
+        - meta_scope: meta.array.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(_(temporary|i)_)\b
+          comment: "TODO: Note that _i_ should be valid within any do loops after the array statement, but this match pattern will not capture that"
+          scope: variable.language.array.sas
+        - include: variables-data-or-proc
+  datastep-put-statement:
+    - match: (?i)\b(put)\s+
+      comment: Data-step-style put statement
+      scope: keyword.other.statement.put.sas
+      push:
+        - meta_scope: meta.datastep-put.sas
+        - include: semicolon-pop # pop: true
+        - match: \b(_all_|OVERPRINT|_page_|_blankpage_)\b
+          scope: keyword.other.datastep.put.sas
+        - match: '(@{1,2})'
+          scope: keyword.other.input.sas
+        - include: formats-informats
+        - include: variables-data-or-proc
+  datastep-length-statement:
+    - match: (?i)^\s*(length)\s+
+      scope: keyword.other.statement.length.sas
+      push:
+        - meta_scope: meta.datastep-length.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(default)\s*(=)
+          scope: keyword.other.set.sas
+        - match: '(\$\d+)\b'
+          scope: constant.other.char.format.sas
+
+###############################################################################
+# GENERIC (NON-SQL) SAS PROCEDURES                                            #
+###############################################################################
+  common-statements-proc:
+    - match: (?i)^\s*(freq|id|var|weight)\s+
+      comment: To distinguish these from the dataset-options parallel, require these to be on a new line. They can span multiple lines, so use the push and pop to allow for that. freq and weight Per "http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=proc&docsetTarget=n1ml5do0of6vafn1rptm92hgbclw.htm&locale=en" Others per experience/checking multiple procs
+      captures:
+        1: keyword.other.statement.proc.sas
+      push:
+        - include: semicolon-pop # pop: true
+  statements-proc-other:
+    # I do not use these statements or the procs they correspond to enough to flesh them out. Feel free to build out and submit a pull request!
+    - match: (?i)^\s*(add|code|contrast|estimate|lsmeans|manova|means|mtest|paired|plot|random|repeated|restrict|reweight|store)\s+
+      comment: Proc REG, GLM or other statistical statements
+      scope: keyword.other.statement.proc-generic-statistical.sas
+    - match: (?i)^\s*(age|append|audit|change|contents|copy|delete|exchange|exclude|format|label|modify|rebuild|rename|repair|save|select)\s+
+      comment: proc datasets statements
+      scope: keyword.other.statement.proc-datasets.sas
+    - match: (?i)^\s*(abort|convert|display|remove|window)\s+
+      scope: keyword.other.statement.generic.sas
+      push:
+        - include: semicolon-pop # pop: true
+  statements-proc-statistical:
+    - match: (?i)^\s*(ranks|types|var|ways)\s+
+      comment: To distinguish these from the other sas keywords, require these to be on a new line. 
+      captures:
+        1: keyword.other.statement.proc.sas
+      push:
+        - include: semicolon-pop # pop: true
+  proc-generic-options:
+    # include keywords that must occur before the semi-colon ending the PROC <procname>... statement
+    # Although where possible, I LABEL the keyword by its proc, I am lumping all non-sql procs as ONE meta tag
+    - match: (?i)\b(no)?(equals|print|threads)\b 
+      scope: keyword.other.proc-generic.optionalnoprefix.sas
+    - match: (?i)\b(alpha|contents|formchar|name|plot(s)?|singular|split)\s*(=)
+      captures:
+        1: keyword.other.proc-generic.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(simple|corr|exclusive|exclnpwgt|missing)\b
+      scope: keyword.other.proc-generic.sas
+    - match: (?i)\b(ascii|danish|datecopy|ebcdic|finnish|force|national|nodupkey|norwegian|nouniquekey|overwrite|polish|presorted|reverse|swedish|tagsort|nodupes|noduplicates)\b
+      comment: "Not available in SAS 9.4: (nodupes|noduplicates) See http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=proc&docsetTarget=p02bhn81rn4u64n1b6l00ftdnxge.htm&locale=en"
+      scope: keyword.other.proc-sort.sas
+    - match: (?i)\b(qmarkers|qmethod|qntldef|sortsize|sortseq|vardef)\s*(=)
+      captures:
+        1: keyword.other.proc-sort.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(force|nolist|nowarn)\b
+      comment: "excluding because they are also in 'dataset-options' (ALTER|ENCRYPTKEY|GENNUM)"
+      scope: keyword.other.proc-datasets.sas
+    - match: (?i)\b(kill|library|lib|memtype)\s*(=)
+      captures:
+        1: keyword.other.proc-datasets.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(no)?(details)\b 
+      scope: keyword.other.proc-datasets.optionalnoprefix.sas
+    - match: (?i)\b(chartype|completetypes|descendtypes|idmin|nonobs|notrap|nway|printalltypes|printidvars|stackodsoutput)\b
+      scope: keyword.other.proc-means.sas
+    - match: (?i)\b(fw|maxdec|pctldef|sumsize)\s*(=)
+      captures:
+        1: keyword.other.proc-means.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(new)\b
+      scope: keyword.other.proc-printto.sas
+    - match: (?i)\b(log|print)\s*(=)\s*(\1)*
+      comment: Allows these to be set equal to themselves or to something else.
+      captures:
+        1: keyword.other.proc-printto.logorprint.sas
+        2: keyword.operator.assignment.sas
+        3: keyword.other.proc-printto.logorprint.sas
+    - match: (?i)\b(label|unit)\s*(=)
+      captures:
+        1: keyword.other.proc-printto.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(bypageno|colwidth|ls|panels|ps|pspace|pctldef|qntldef|spacing|spanrows|wrap)\s*(=)
+      captures:
+        1: keyword.other.report.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(no)?(center|completecols|completerows|wd|windows)\b 
+      scope: keyword.other.proc-report.optionalnoprefix.sas
+    - match: (?i)\b(box|command|headline|headskip|list|named|noalias|noheader|prompt|showall|style)\b
+      scope: keyword.other.proc-report.sas
+    - match: (?i)\b(compress|nlevels|page)\b
+      scope: keyword.other.proc-freq.sas
+    - match: (?i)\b(no)?(details)\b
+      scope: keyword.other.proc-contents.optionalnoprefix.sas
+    - match: (?i)\b(centiles|fmtlen|directory|nods|short|varnum)\b
+      scope: keyword.other.proc-contents.sas
+    - match: (?i)\b(label|double|noobs|round|uniform)\b
+      scope: keyword.other.proc-print.sas
+    - match: (?i)\b(blankline|grandtotal_label|heading|n|obs|rows|sumlabel|width)\s*(=)
+      comment: Note that PROC PRINT allows either sumlabel= or no?sumlabel, so consume the one with equals first
+      captures: 
+        1: keyword.other.proc-print.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(no)?(sumlabel)\b
+      scope: keyword.other.proc-print.optionalnoprefix.sas
+    - match: (?i)\b(fuzz|maxprint|criterion|method)\s*(=)
+      captures: 
+        1: keyword.other.proc-compare.withequals.sas
+        2: keyword.operator.assignment.sas
+    - match: (?i)\b(allobs|allstats|allvars|briefsummary|brief|listall|listbase|listbaseobs|listbasevar|listcomp|listcompobs|listcompvar|listequalvar|listobs|listvar|nodate|nomissbase|nomisscomp|nomissing|nosummary|novalues|outall|outbase|outcomp|outdif|outnoequal|outpercent|printall|stats|transpose)\b
+      scope: keyword.other.proc-compare.sas
+    - match: (?i)\b(note|warning|error)\b
+      scope: keyword.other.proc-compare.note-type.sas
+  proc-charting-hodgepodge:
+    # You will notice that this is extremely light on the SAS chart procedures. I have long since given up on graphing data in SAS, so I have no reason to build this out. Please feel free to do so and submit a pull request!
+    - match: (?i)^\s*(block|hbar3d|hbar|vbar3d|vbar|pie3d|pie|donut|star)
+      scope: proc.charting.statement.sas
+      push:
+        - meta_scope: meta.proc-charting.sas
+        - match: (?i)\b(symbol)\b
+          scope: keyword.other.proc.charting.sas
+        - match: (?i)\b(nolegend|nomiss|uniform)\b
+          scope: keyword.other.proc-plot.sas
+        - match: (?i)\b(hpercent|hpct|vpercent|vpct|vtoh)\s*(=)
+          captures:
+            1: keyword.other.proc-plot.withequals.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(annotate|axis|blockmax|cautoref|caxis|cerror|cframe|cfreqlabel|clm|coutline|cpercentlabel|cref|ctext|description|errorbar|freq|freqlabel|gaxis|gout|group|gspace|html|html_legend|iframe|imagemap|imagestyle|inside|lautoref|legend|levels|lref|maxis|meanlabel|midpoints|minor|outside|patternid|percentlabel|raxis|ref|shape|space|subgroup|suboutside|sumlabel|sumvar|type|url|wautoref|width|woutline|wref)\s*(=)
+          captures:
+            1: keyword.other.proc-gchart.withequals.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(ascending|autoref|cfreq|clipref|cpercent|descending|discrete|freq|frontref|g100|mean|missing|noaxis|nobaseref|noheading|nolegend|nostats|nosymbol|nozero|percent|percentsum|position|range|sum)\b
+          scope: keyword.other.proc-gchart.options.sas
+        - match: (?i)\b(no)?(frame)\b
+          scope: keyword.other.proc-charting.options.sas
+        - include: semicolon-pop
+  proc-datasource-name:
+    - match: '(?im)(\b(data)\b\s*(=)\s*({{table_name}}))'
+      captures:
+        2: keyword.other.data-equals.sas
+        3: keyword.operator.assignment.sas
+        4: variable.function.name.table.sas
+    - include: dataset-options
+  proc-datasource-out:
+    - match: '(?i)(\b(dupout|out|outp|out2|outest|uniqueout)\b\s*(=)\s*({{table_name}}))'
+      comment: Separating these from proc-datasource-name for future use if invoking only for relevant procs
+      captures:
+        2: keyword.other.data-equals.output.sas
+        3: keyword.operator.assignment.sas
+        4: variable.function.name.table.sas
+    - include: dataset-options
+  proc-datasource-input:
+    - match: '(?i)(\b(classdata|base|compare)\b\s*(=)\s*({{table_name}}))'
+      comment: Separating these from proc-datasource-name for future use if invoking only for relevant procs
+      captures:
+        2: keyword.other.data-equals.input.sas
+        3: keyword.operator.assignment.sas
+        4: variable.function.name.table.sas
+    - include: dataset-options
+  proc-statement-output:
+    - match: (?i)^\s*(output)\s+
+      comment: Applies to multiple statistical procedures, so this might have proc-specific nuances that are lumped here
+      captures:
+        1: keyword.other.statement.output.sas
+      push:
+        - include: semicolon-pop # pop: true
+        - include: proc-datasource-out
+          comment: "captures output out=<datasetname>"
+        - include: common-keywords-statistical
+        - include: keywords-statistical-chisq
+        - match: (?i)\b(autolabel|autoname|keeplen|levels|noinherit|ways)\b
+          comment: "Technically, these must come after a /, but I just can't be sussed to add the regex "
+          scope: keyword.other.statement.output.sas
+  proc-statement-model:
+    - match: (?i)^\s*(model)\s+
+      comment: Applies to multiple statistical procedures, so this might have proc-specific nuances that are lumped here
+      scope: keyword.other.statement.model.sas
+      push: 
+        - meta_scope: meta.proc-statement-model.sas
+        - include: semicolon-pop # pop: true
+        - include: proc-statement-model-slash-options
+  proc-statement-value:
+    - match: (?i)^\s*(value)\s+
+      comment: Based on proc format
+      scope: keyword.other.statement.value.sas
+      push: 
+        - meta_scope: meta.proc-statement-value.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(default|fuzz|min|max)\s*(=)
+          captures:
+            1: keyword.other.format.proc-statement-value.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(notsorted|multilabel)\b
+          scope: keyword.other.format.proc-statement-value.sas
+  proc-statement-class:
+    - match: (?i)^\s*(class)\s+
+      comment: Applies to multiple statistical procedures, so this might have proc-specific nuances that are lumped here
+      scope: keyword.other.statement.class.sas
+      push: 
+        - meta_scope: meta.proc-statement-class.sas
+        - include: semicolon-pop # pop: true
+        - include: proc-statement-class-slash-options
+  proc-statement-class-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the class statement does not have options.
+      set:
+        - match: (?i)\b(ascending|ascend|descending|descend|groupinternal)\b
+          scope: keyword.other.class.after-slash.sas
+        - include: order-equals-option
+        - include: common-statements-proc-slash-options
+        - include: semicolon-pop
+  order-equals-option:
+    - match: (?i)\b(order)\s*(=)\s*(data|formatted|fmt|external|unformatted|unfmt|internal|freq|freqdata|freqformatted|freqinternal)\b
+      comment: Note all the aliases for these options *sigh*. Mostly per SAS documentation for proc means
+      captures: 
+        1: keyword.other.order-equal.sas
+        2: keyword.operator.assignment.sas
+        3: keyword.other.order-equal.option.sas
+  proc-statement-model-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the model statement does not have options.
+      set:
+        - match: (?i)\b(acov|adjrsq|aic|aliasing|all|b|bic|clb|cli|clm|clmparm|collin|collinoint|corrb|covb|cp|details|dw|dwprob|edf|gmsep|hcc|i|influence|jp|lackfit|mse|noint|noprint|outseb|outstb|outvif|p|partial|partialdata|partialr2|pc|pcorr(1|2)|press|r|rmse|rsquare|sbc|scorr(1|2)|seqb|sp|spec|srt|ss1|ss2|sse|stb|tol|vif|white|xpx)\b
+          scope: keyword.other.model.after-slash.sas
+        - match: (?i)\b(aliasing|clmparm|e|e1|e2|e3|e4|effectsize|intersept|int|inverse|nouni|solution|ss(1|2|3|4)|tolerance)\b
+          scope: keyword.other.model.glm.after-slash.sas
+        - match: (?i)\b(acovmethod|alpha|best|groupnames|hccmethod|include|maxstep|pcomit|ridge|sigma|singular|slentry|sle|slstay|sls|start|stop|zeta)\s*(=)
+          captures: 
+            1: keyword.other.model.after-slash.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(selection)\s*(=)\s*(forward|f|backward|b|stepwise|maxr|minr|rsquare|adjrsq|cp|none)\b
+          captures: 
+            1: keyword.other.reg-model-selection.sas
+            2: keyword.operator.assignment.sas
+            3: keyword.other.reg-model-selection.option.sas
+        - include: common-statements-proc-slash-options
+        - include: semicolon-pop
+  proc-statement-tables:
+    - match: (?i)^\s*(tables)\s+
+      comment: Based on proc freq. Knowing, SAS, there are probably other procs with similar statements and slightly different options
+      scope: keyword.other.statement.tables.sas
+      push: 
+        - meta_scope: meta.proc-statement-tables.sas
+        - include: semicolon-pop # pop: true
+        - include: proc-statement-tables-slash-options
+  proc-statement-tables-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the model statement does not have options. Must use set and not pop.
+      set:
+        - match: (?i)\b(all|cl|cmh(1|2)?|gailsimon|missing|plcorr|cellchi2|cumcol|deviation|expected|missprint|pearsonres|printkwts|scorout|sparse|stdres|totpct|crosslist|list|nocol|nocum|nofreq|nopercent|noprint|norow|nosparse|nowarn|outcum|outexpect|outpct)\b
+          scope: keyword.other.tables.after-slash.sas
+        - include: keywords-statistical-chisq
+        - match: (?i)\b(format|maxlevels|plots|scores)\s*(=)
+          captures: 
+            1: keyword.other.tables.after-slash.sas
+            2: keyword.operator.assignment.sas
+        - include: common-statements-proc-slash-options
+        - include: semicolon-pop
+  proc-statement-exact:
+    - match: (?i)^\s*(exact)\s+
+      comment: Based on proc freq. Knowing, SAS, there are probably other procs with similar statements and slightly different options
+      scope: keyword.other.statement.exact.sas
+      push: 
+        - meta_scope: meta.proc-statement-exact.sas
+        - include: semicolon-pop
+        - match: (?i)\b(barnard|comor|eqor|zelen|kappa|kentb|taub|lrchi|mcnem|mhchi|pchi|pcorr|scorr|smdcr|smdrc|stutc|tauc|wtkap|wtkappa)\b
+          scope: keyword.other.exact.statistics.sas
+        - include: keywords-statistical-chisq
+        - include: proc-statement-exact-slash-options
+  proc-statement-exact-slash-options:
+    - match: (?=\/)
+      comment: Per https://github.com/FriedEgg/SasIOM
+      set:
+        - match: (?i)\b(mc|midp|point)\b
+          scope: keyword.other.freq.after-slash.sas
+        - match: (?i)\b(alpha|maxtime|n|pformat|seed)\s*(=)
+          captures: 
+            1: keyword.other.exact.after-slash.sas
+            2: keyword.operator.assignment.sas
+        - include: semicolon-pop
+  proc-statement-test:
+    - match: (?i)^\s*(test)\s*
+      scope: keyword.other.statement.test.sas
+      push:
+        - meta_scope: meta.proc-statement-test.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(agree|gamma|kappa|kentb|taub|measures|pcorr|plcorr|scorr|smdcr|smdrc|stutc|tauc|wtkap|wtkappa)\b
+          scope: keyword.other.test.statistics.sas
+  proc-statement-plot:
+    - match: (?i)^\s*(plot)\s+
+      comment: Applies to multiple statistical procedures, so this might have proc-specific nuances that are lumped here
+      scope: keyword.other.statement.plot.sas
+      push: 
+        - meta_scope: meta.proc-statement-plot.sas
+        - include: semicolon-pop # pop: true
+        - include: proc-statement-plot-slash-options
+  proc-statement-plot-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the plot statement does not have options. Must use set and not pop.
+      set:
+        - match: (?i)\b(box|overlay)\b
+          scope: keyword.other.plot.type.after-slash.sas
+        - match: (?i)\b(hexpand|hreverse|hzero|vexpand|vreverse|vzero|states)\b
+          scope: keyword.other.plot.after-slash.sas
+        - match: (?i)\b(haxis|hpos|vaxis|hspace|vpos|vspace|placement|split|contour|slist|href|hrefchar|vref|vrefchar)\s*(=)
+          captures: 
+            1: keyword.other.plot.after-slash.sas
+            2: keyword.operator.assignment.sas
+        - include: semicolon-pop
+  statements-proc-report:
+    - include: statements-proc-report-singleline
+    - include: statements-proc-report-other
+    - include: report-statement-compute
+    - include: report-statement-define
+    - include: report-statement-break
+  statements-proc-report-singleline:
+    - match: (?i)^\s*(endcomp)\s*(;)
+      captures:
+        1: keyword.other.statement.proc-report.sas
+        2: punctuation.terminator.sas
+  statements-proc-report-other:
+    - match: (?i)^\s*(column|line)\s+
+      comment: To distinguish these from other SAS keywords, require these to be on a new line. They can span multiple lines, so use the push and pop to allow for that.
+      scope: keyword.other.statement.proc-report.sas
+      push:
+        - include: semicolon-pop # pop: true
+  report-statement-break:
+    - match: (?i)^\s*(r?break)\s+(after|before)\b
+      scope: keyword.other.statement.report-break.sas
+      push: 
+        - meta_scope: meta.report-break.sas
+        - include: report-statement-break-slash-options
+        - include: semicolon-pop # pop: true
+  report-statement-break-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the class statement does not have options. This needs to be set, not push.
+      set:
+        - match: (?i)\b(dol|dul|ol|page|skip|summarize|suppress|ul)\b
+          scope: keyword.other.break.after-slash.sas
+        - include: common-statements-proc-slash-options
+        - include: semicolon-pop
+  common-statements-proc-slash-options:
+    # This does not have a beginning non-capturing match. Must be called from a repo that DOES start with it.
+    # Doing this because I couldn't figure out how to nest the same non-capturing match, 
+    - match: (?i)\b(exclusive|missing|mlf|preloadfmt|style)\b
+      scope: keyword.other.proc-common.after-slash.sas
+    - match: (?i)\b(color|contents|spacing|weight|width)\s*(=)
+      captures: 
+        1: keyword.other.proc-common.after-slash.withequals.sas
+        2: keyword.operator.assignment.sas
+    - include: order-equals-option
+    - include: semicolon-pop
+  report-statement-compute:
+    - match: (?i)^\s*(compute)\s+(after|before|\w+)\b
+      scope: keyword.other.statement.report-compute.sas
+      push: 
+        - meta_scope: meta.report-compute.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(char(acter)?\d*)
+          scope: keyword.other.report-compute.charlength.sas
+        - match: (?i)\b(length)\s*(=)
+          captures:
+            1: keyword.other.report-compute.length.sas
+            2: operator.assignment.sas
+  report-statement-define:
+    - match: (?i)^\s*(define)\s+
+      scope: keyword.other.statement.report-define.sas
+      push:
+        - meta_scope: meta.report-define.sas
+        - include: semicolon-pop # pop: true
+        - include: report-statement-define-slash-options
+        - include: semicolon-pop
+  report-statement-define-slash-options:
+    - match: (?=\/)
+      comment: Need semicolon-pop at end to pop this off if the define statement does not have options. This needs to be set, not push.
+      set:
+        - match: (?i)\b(center|left|right|across|analysis|computed|display|group|order|flow|noprint|nozero|page)\b
+          scope: keyword.other.define.after-slash.sas
+        - match: (?i)\b(color|format|spacing)\s*(=)
+          captures: 
+            1: keyword.other.define.after-slash.withequals.sas
+            2: keyword.operator.assignment.sas
+        - include: common-keywords-statistical
+        - include: formats-informats
+        - include: common-statements-proc-slash-options
+
+## SAS SQL ####################################################################
+  sql_table_alter:
+    - match: ^\s*(?im)(alter)?\s+\b(table)[[:space:]]+({{object_name}})
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+      push:
+        - include: sql_constraint_add
+        - include: sql_constraint_drop
+        - include: column_drop-add-modify
+          comment: Must include the add/drop {object-type} BEFORE including this.
+        - include: semicolon-pop
+  sql_column-separator:
+    - match: (?:,)
+      scope: punctuation.separator.sas-sql
+  column_drop-add-modify:
+    - include: semicolon-pop
+    - match: ^\s*(?i)(add|drop|modify)\s+(?!constraint|index|table|view|foreign|primary|unique)({{object_name}})
+      comment: First try to capture cases where the object names start on the same line as the keyword. Pop off when that happens
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+      pop: true
+      push:
+        - include: sql_column-separator
+    - match: '^\s*(?i)(add|drop|modify)\s*$\n?'
+      comment: Capture the remaining cases and pop off
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+      pop: true
+      push:
+        - include: sql_column-separator
+    # comment: Multiple tables, views, and indexes can be dropped at the same time.
+  sql_additional-object-names:
+    - match: \s*(,)\s*({{object_name}})
+      comment: Be very careful in including this elsewhere, because Object_Name is generic and will capture just about anything.
+      captures: 
+        1: punctuation.separator.sas-sql
+        2: variable.function.name.object.sas-sql
+  sql_object_describe:
+    - match: ^\s*(?im)(describe)?\s+\b(table\s+constraints|view|table)\s+({{object_name}})
+      comment: http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=p0393mbwto9n9gn1i0yaxvr5iqae.htm&locale=en
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+      push:
+        - include: semicolon-pop
+        - include: sql_additional-object-names
+  sql_index_create:
+    - match: '(?i)\s*\b(create)\s+(unique\s+)?(index)\s+({{object_name}})'
+      scope: meta.index.sas-sql
+      captures:
+        1: keyword.other.DML-operation.sas-sql
+        2: keyword.other.index.option.unique.sas-sql
+        3: keyword.other.index.sas-sql
+        4: entity.name.function.index.sas-sql
+  sql_index_drop:
+    - match: (?i)\b(drop)\s+(index)\s+({{object_name}})
+      scope: meta.drop.index.sas-sql
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+      push:
+        - match: (;)
+          scope: punctuation.terminator.sas
+          pop: true
+        - include: sql_additional-object-names
+        - match: (?i)\b(from)\b\s+({{object_name}})
+          captures:
+            1: keyword.other.DDL-operation.sas-sql
+            2: variable.function.name.object.sas-sql
+  sql_table-view_drop:
+    - match: (?i)\b(drop)\s+(table|view)\s+({{object_name}})
+      scope: meta.drop.table-or-view.sas-sql
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+      push:
+        - match: (;)
+          scope: punctuation.terminator.sas
+          pop: true
+        - include: sql_additional-object-names
+  sql_constraint_drop:
+      # Note that DB2 allows "drop foreign key" an "drop primary key" http://documentation.sas.com/?cdcId=pgmmvacdc&cdcVersion=9.4&docsetId=sqlproc&docsetTarget=n1ckvfae6xf2tyn1nrivm6egpr8b.htm&locale=en 
+    # whatever calls this must include semicolon pop- include: semicolon-pop
+    - match: ^\s*(?i)(drop)\s+(constraint)({{object_name}})
+      scope: meta.drop.constraint.sas-sql
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+      push:
+        #- include: semicolon-pop-nocapture
+        - include: sql_additional-object-names
+    - match: ^\s*(?i)(drop)\s+(foreign\s+key)({{object_name}})
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+  sql_constraint_create:
+    - match: (?im)\b(constraint)[[:space:]]+({{object_name}}(?:[[:space:]]+))?((primary\s+key)|default|check|foreign\s+key|not\s+null)\b
+      captures:
+        1: keyword.other.object-type.sas-sql
+        2: variable.function.name.object.sas-sql
+        3: keyword.other.constraint.sas-sql
+    - match: (?i)\b(references)\s+({{object_name}})
+      comment: Technically, this should only be allowed to invoke after a foreign key, but close enough
+      captures: 
+        1: keyword.other.constraint.fk.sas-sql
+        2: variable.function.name.object.sas-sql
+    - match: (?i)\b(on\s+(delete|update)\s+(cascade|restrict|set\s+null)?)
+      scope: keyword.other.constraint.action.sas-sql
+  sql_constraint_add:
+    - match: (?im)(add)?\s*\b(constraint)[[:space:]]+({{object_name}}(?:[[:space:]]+))?((primary\s+key)|default|check\s*(?:\()|foreign\s+key|not\s+null)\b
+      captures:
+        1: keyword.other.DDL-operation.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: variable.function.name.object.sas-sql
+        4: keyword.other.constraint.sas-sql
+      #push:
+      #  - include: semicolon-pop-nocapture
+    - match: (?i)\b(references)\s+({{object_name}})
+      comment: Technically, this should only be allowed to invoke after a foreign key, but close enough
+      captures: 
+        1: keyword.other.constraint.fk.sas-sql
+        2: variable.function.name.object.sas-sql
+    - match: (?i)\b(on\s+(delete|update)\s+(cascade|restrict|set\s+null)?)
+      scope: keyword.other.constraint.action.sas-sql
+    #- include: semicolon-pop-nocapture
+  sql_table_create:
+    - match: '(?i)\s*\b(create)\s+(table)\s+(like)\s+({{object_name}})\s*(;)'
+      scope: meta.create.II.sas-sql
+      captures:
+        1: keyword.other.create.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: keyword.other.create-table-like.sas-sql
+        4: entity.name.function.object.sas-sql
+        5: punctuation.terminator.sas-sql
+    - match: '(?i)\s*\b(create)\s+(table|view|index)\s+({{object_name}})'
+      scope: meta.create.III.sas-sql
+      captures:
+        1: keyword.other.create.sas-sql
+        2: keyword.other.object-type.sas-sql
+        3: entity.name.function.object.sas-sql
+      push:
+        - meta_scope: meta.create-table.sas
+        - include: semicolon-pop-nocapture
+        - match: (?i)\b(as)\b
+          scope: keyword.other.as.sas-sql
+          comment: Blah, Need to re-capture as.
+          pop: true
+        - include: sql_constraint_create
+        - include: sql_data-type
+        - include: sql_column-modifier
+        - include: common-keywords-sas-sql
+
+
+###############################################################################
+# OPENCODE STATEMENTS                                                         #
+###############################################################################
+  goptions-statement:
+    - match: (?im)^\s*(goptions)\s+
+      scope: keyword.other.statement.goptions.sas
+      push:
+        - meta_scope: meta.goptions.sas
+        - include: semicolon-pop
+        - match: (?i)\b(aspect|autosize|binding|cback|cby|chartype|cmap|colors|cpattern|csymbol|ctext|ctitle|dashscale|delay|devaddr|device|devmap|disposal|drv(?=term|init)(?=1|2)|extension|fby|fcache|fileclose|fontres|ftext|ftitle|ftrack|gaccess|gcopies|gend|gepilog|goutmode|gprolog|gprotocol|gsflen|gsfmode|gsfname|gsize|gstart|gunit|gwait|handshake|hby|horigin|hpos|hsize|htext|htitle|iback|imagestyle|interpol|iteration|keymap|lfactor|lrows|offshadow|paperdest|paperfeed|paperlimit|papersize|papersource|papertype|penmounts|postgepilog|postgprolog|(?=pre|post)graph(?=1|2)|ppdfile|pregepilog|pregprolog|promptchars|render|renderlib|repaint|rotate|simfont|speed|swfontrender|targetdevice|trantab|ucc|vorigin|vpos|vsize|xmax|xpixels|ymax|ypixels)\s*(=)
+          captures: 
+            1: keyword.other.goptions-statement.withequals.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(no)?(accessible|altdesc|autocopy|autofeed|border|cell|characters|circlearc|collate|dash|display|duplex|erase|fasttext|fileonly|fill|fillinc|graphrc|gsfprompt|imageprint|interlaced|pclip|pensort|piefill|polygonclip|polygonfill|prompt|reverse|rotate|swap|symbol|transparency|userinput|v6comp)\b
+          scope: keyword.other.goptions-statement.optionalnoprefix.sas
+        - match: (?i)\b(reset)\s*(=)
+          captures:
+            1: keyword.other.goptions.reset.sas
+            2: keyword.operator.assignment.sas
+  options-statement:
+    - match: (?im)^\s*(options)\s*
+      scope: keyword.other.statement.options.sas
+      push:
+        - meta_scope: meta.options.sas
+        - include: semicolon-pop
+        - match: (?i)\b(_last_|altlog|altprint|authserver|bufsize|encrypt|nocmpopt|procleave|sysleave|sasfrscr)\b
+          scope: keyword.other.systemoptions.sas
+        - match: (?i)\b((no)?(animoverlay|autoexec|autocorrect|awsmenu|awsmenumerge|bufno|bufsize|byerr|byline|bysorted|caps|cardimage|center|charcode|chkptclean|cleanup|cmdmac|collate|colorprinting|cpuid|date|details|dlcreatedir|dmr|dsnferr|dmssynchk|dtreset|duplex|emailfrom|errorabend|errorbyabend|fmterr|fontembedding|fullstimer|hostinfolong|hostprint|icon|implmac|label|loadlist|gwindow|mautosource|mcompile|merror|minoperator|missing|mlogic|mprintnest|mprint|mrecall|mreplace|msgcase|mstored|msymtabmax|multenvappl|mvarsize|notes|number|oplist|ovp|pdfaccess|pdfassembly|pdfcomment|pdfcontent|pdfcopy|pdffillin|presenv|printinit|printmsglist|quotelenmax|replace|rlang|rsasuser|sasautos|sasmstore|scrollbarflash|serror|setinit|sortequals|sortvalidate|source|source2|splash|spool|stimer|svgautoplay|svgcontrolbuttons|svgmagnifybutton|symbolgen|syntaxcheck|sysparm|terminal|threads|uprintcompression|vnferr|xmin|xsync|xwait|windowsmenu|workterm))\b
+          scope: keyword.other.systemoptions.optionalnoprefix.sas
+        - match: (?i)\b(animation|animduration|animloop|append|appletloc|autosaveloc|awscontrol|awsdef|binding|bottommargin|catcache|cbufno|cgoptimize|cmplib|cmpmodel|cmpopt|colophon|comamid|comaux1|compress|copies|cpucount|cstgloballib|cstsamplelib|datastmtchk|datestyle|decimalconv|deflation|device|dkricond|dkrocond|dldmgaction|dsaccel|dsoptions|emailauthprotocol|emailhost|emailid|emailackwait|emailport|emailpw|emailsys|emailutcoffset|engine|errorcheck|errors|eventds|extendobscounter|firstobs|fmtsearch|font|fontrendering|fontsloc|formchar|formdlim|forms|helpbrowser|helphost|helpport|ibufno|ibufsize|insert|intervalds|invaliddata|jpegquality|leftmargin|linesize|logparm|lrecl|maps|maxmemquery|memcache|mergenoby|msglevel|news|obs|orientation|pageno|pagesize|paperdest|papersize|papersource|papertype|parmcards|parm|pdfpagelayout|pdfpageview|pdfpassword|pdfprint|pdfsecurity|printerpath|prtabortdlgs|prtsetforms|reuse|rightmargin|s|s2|s2v|sascontrol|sashelp|sasscript|sasuser|seq|set|skip|sortcutp|sortcut|sortdev|sortdup|sortname|sortparm|sortpgm|sortsize|stimefmt|stripesize|sumsize|svgfadein|svgfademode|svgfadeout|svgheight|svgpreserveaspectratio|svgtitle|svgviewbox|svgwidth|svgx|svgy|sysprint|sysprintfont|tapeclose|textureloc|timezone|topmargin|tbufsize|ubufno|ubufsize|urlencoding|user|utilloc|uuidcount|validfmtname|validmemname|validvarname|varinitchk|varlenchk|vbufsize|work|yearcutoff)\s*(=)
+          captures: 
+            1: keyword.other.systemoptions.sas
+            2: keyword.operator.assignment.sas
+        # SAS documentation has SQL-related system options in separate section of documentation *sigh*
+        - match: (?i)\b((no)?(sqlconstdatetime|sqliponeattempt|sqlremerge))\b
+          scope: keyword.other.systemoptions.sql.optionalnoprefix.sas
+        - match: (?i)\b(sqlgeneration|sqlmapputto|sqlreduceput|sqlreduceputobs|sqlreduceputvalues|sqlundopolicy)\s*(=)
+          captures: 
+            1: keyword.other.systemoptions.sql.sas
+            2: keyword.operator.assignment.sas
+  ods-statement:
+    - match: (?i)\b(ods)\b
+      scope: keyword.other.statement.ods.sas
+      push:
+        - meta_scope: meta.ods.sas
+        - include: semicolon-pop
+        - include: semicolon-pop # pop: true
+        - match: '(?i)\b(_all_\s+close|all|anchor|archive|attributes|base|body|charset|chtml|clear|close|code|codebase|contents|cssstyle|csvall|csv|datapanel|decimal_align|device|docbook|document|dynamic|encoding|escapechar|event|excel|exclude|file|frame|gfootnote|gpath|gtitle|headtext|phtml|html3|html5|htmlcss|html|id|image_dpi|label|layout|listing|markup|match_all|metatext|newfile|no_bottom_matter|no_top_matter|none|off|on|options|output|package|page|parameters|path|pcl|pdf|persist|powerpoint|printer|proclabel|proctitle|ps|record_separator|region|results|rtf|select|show|style|stylesheet|tagsets\.\w+|text|title|trace|trantab|url|usegopt|verify|wml)\b'
+          scope: keyword.other.ods.sas
+  include-statement:
+    - match: (?im)(%include)\s+
+      scope: keyword.other.statement.include.sas
+      push:
+        - meta_scope: meta.include.sas
+        - include: semicolon-pop # pop: true
+        - include: common-keywords-windowsos
+        - match: (?i)\b(source2)\b
+          scope: keyword.other.include.sas
+        - match: (?i)\b(s2)\s*(=)
+          captures: 
+            1: keyword.other.include.sas
+            2: keyword.operator.assignment.sas
+  catname-statement:
+    - match: (?im)^\s*(catname)\s+([_&[:alpha:]][_&.[:alnum:]]*)\s+
+      captures:
+        1: keyword.other.statement.catname.sas
+        2: entity.name.function.catname.sas
+      comment: Per https://github.com/FriedEgg/SasIOM
+      push:
+        - meta_scope: meta.catname.sas
+        - include: semicolon-pop
+        - match: (?i)\b((_all_\s*)?(clear|list))\b
+          scope: keyword.other.catname.sas
+        - match: (?i)\b(access)\s*(=)\s*(readonly)
+          captures:
+            1: keyword.other.catname.access.sas
+            2: keyword.operator.assignment.sas
+            3: keyword.other.catname.readonly.sas
+  filename-statement:
+    - match: (?im)^\s*(filename)\b
+      scope: keyword.other.statement.filename.sas
+      push:
+        - meta_scope: meta.filename.sas
+        - include: semicolon-pop # pop: true
+        - include: common-keywords-filedevice
+        - include: common-keywords-windowsos
+        - match: (?i)\b((_all_\s*)?(clear|list))\b
+          scope: keyword.other.filename.sas
+  file-statement:
+    - match: (?im)^\s*(file)\b
+      scope: keyword.other.statement.file.sas
+      push:
+        - meta_scope: meta.file.sas
+        - include: semicolon-pop
+        - include: common-keywords-filedevice
+        - include: common-keywords-windowsos
+        - include: common-keywords-file-infile
+        - match: (?i)\b(header|linesleft|pagesize|_file_)\s*(=)
+          captures:
+            1: keyword.other.file.withequals.sas
+            2: keyword.operator.assignment.sas
+        - match: (?i)\b(dsd|dropover|flowover|mod|old|stopover)\b
+          scope: keyword.other.file.sas
+        - match: (?i)\b((no)?(footnotes|pad|print|titles))\b
+          scope: keyword.other.file.optionalnoprefix.sas
+  infile-statement:
+    - match: (?im)^\s*(infile)\b
+      scope: keyword.other.statement.infile.sas
+      push:
+        - meta_scope: meta.infile.sas
+        - include: semicolon-pop # pop: true
+        - include: common-keywords-filedevice
+        - include: common-keywords-windowsos
+        - include: common-keywords-file-infile
+        - match: (?i)\b(eof|eov|firstobs|length|obs|start|_infile_)\s*(=)
+          captures:
+            1: keyword.other.infile.withequals.sas
+            2: keyword.operator.assignment.sas
+        - include: dataset-noncontrol-end
+          comment: Assign common scope for end keyword when it is not a control statement
+        - match: (?i)\b(dsd|datalines4|datalines|cards4|cards|flowover|missover|scanover|sharebufs|stopover|truncover)\b
+          scope: keyword.other.infile.sas
+        - match: (?i)\b((no)?(expandtabs|pad|print))\b
+          scope: keyword.other.infile.optionalnoprefix.sas
+  titlefootnote-statement:
+    - match: (?i)\b((footnote|title)([0-9]|10)*)\s+
+      scope: keyword.other.statement.titlefootnote.sas
+      push:
+        - meta_scope: meta.titlefootnote.sas
+        - include: semicolon-pop # pop: true
+        - match: (?i)\b(bold|italic)\b
+          scope: keyword.other.titlefootnote.sas
+        - match: (?i)\b(bcolor|color|font|height|justify|link|underlin)\s*(=)
+          captures:
+            1: keyword.other.titlefootnote.withequals.sas
+            2: keyword.operator.assignment.sas
+  libname-statement:
+    - match: '(?i)\b(libname)\s+([_&[:alpha:]][_&.[:alnum:]]*)\s+'
+      captures:
+        1: keyword.other.statement.libname.sas
+        2: entity.name.function.libname.sas
+      push:
+        - meta_scope: meta.libname.sas
+        - include: semicolon-pop # pop: true
+        - match: ((_all_\s+)?(clear|list))
+          scope: keyword.other.libname.sas
+        - match: (?i)\b(access|authadmit|authalter|authpw|authread|authwrite|compress|extendobscounter|eoc|INENCODING|outencoding|outrep|pointobs|repempty)\s*(=)
+          captures:
+            1: keyword.other.libname.withequals.sas
+            2: keyword.operator.assignment.sas
+            
+###############################################################################
+# NON-INCLUDED REPOSITORIES (not currently working)                           #
+###############################################################################
+  sql_case-when:
+    - match: (?i)\b(?<!%)(case)\b
+      scope: keyword.control.case.bgn.sas-sql
+      comment: Not called anywhere. Calling it requires that you re-include EVERYTHING that is valid within the case statement (basically, the entire syntax), which can cause infinite looping. See instead custom BracketHighlighter scope.
+      push:
+        - match: (?i)\b(?<!%)(end)\b
+          scope: keyword.control.case.end.sas-sql
+          pop: true
+        - match: (?i)\b(?<!%)(when|then|else)\b
+          scope: keyword.control.case.within.sas-sql
+        - include: sas-functions
+  constants-n-literal:
+    - match: '(?i)(''|")(([^\\1]|\1\1)*)(\1)(n)(?!\1)'
+      comment: name literal constant. Cant get this working, but syntax test for future devt is below.
+      scope: constant.language.name-literal.sas
+      captures: 
+        1: punctuation.definition.string.begin.sas
+        2: constant.character.name-literal.sas
+        4: punctuation.definition.string.end.sas
+        5: support.constant.suffix.name-literal.sas
+       #proc sql;
+       #CREATE TABLE work.test2 AS
+       #SELECT
+       #  '''566 28 abc'N AS ThisIsOK
+       #  ,CASE WHEN Has_ER_Code > 0 THEN 'Y' ELSE 'N' END AS ER_Flag_OK
+       #  ,CASE WHEN Has_ER_Code > 0 THEN 'Y' ELSE 'Nope' END AS ER_StringNeverPopsOff
+       #FROM work.test1;
+       #quit;
+
+# TODO: Keywords only applicable in configuration file or at SAS invokation. Many of the options-statement keywords repeat (typically prefixed with -)
+#TODO: Check these keywords again. Think they don't exist at all for v9: \b(honorappearance|hosthelp|wincharset|emailserver|nobatch|nodmsbatch|noexitwindows|helpenv|probsig|setot|setcomm|siteinfo|myy|pad2)
+# Keywords that have been replaced by other, betters, starting 8.0 or 9.0: \b(macrogen\b
+#TODO: Check apparently TCP/IP or other obscure filename/global options. Might be Z/OS only: (blocksize|filefmt)
+#TODO: SAS access or other file-operation keywords: \b(ddm|remote)
+#TODO: Proc expand or other obscure procs: \b(transformout)\b
+#Exclude: apparent non-Windows OS keywords \b(stdin|poke)\b
+#Dropped keywords:
+#  - \b(crosstab|descript|hvar|inr|nest|regr|subpopn|totper|wsum)\b: Apparent non-SAS (Sudaan?) keywords
+#  - \b(design=)\b: Keywords that I cannot identify
+#
+#TODO: options for the other side of the equals sign:
+#  PROC OPTIONS: GROUP=(codegen)
+#TODO: PROC-specific keywords
+# TODO: FORCE in dataset-operations procedures (proc append, proc datasets, some statements)
+# Removed apparent SQL keywords already covered by source.sqlserver
+# TODO: hash objects: _new_
+# TODO: This will match SAS formats, but it also matches SQL table-alias prefixes and the library part of a two-part table name (e.g., work for work.tablename): '(?i)(\$|\b)[A-Za-z_]{1,32}\d*\.'
+# Autocall macros: \b(%)(qcmpres|cmpres|compstor|datatyp|kverify|left|qlowcase|lowcase|sysrc|qtrim|trim|verify)\b
+#    - match: '(?i:(%)(?!(abort|by|copy|do|else|end|eval|display|global|goto|if|input|local|macro|mend|then|to|until|while|bquote|include|index|left|length|let|lowcase|nrbquote|nrquote|nrstr|put|qlowcase|qscan|qsubstr|qsysfunc|quote|qupcase|return|scan|str|substr|superq|symdel|symexist|symglobl|symlocal|syscall|sysevalf|sysexec|sysfunc|sysget|syslput|sysmacdelete|sysmacexec|sysmacexist|sysmexecdepth|sysmexecname|sysmstoreclear|sysprod|sysrput|unquote|trim|upcase|window)\b)([A-Za-z0-9_&]+))'
+
